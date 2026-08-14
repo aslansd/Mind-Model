@@ -1,0 +1,6 @@
+{
+  "name": "Mind Model",
+  "description": "A cognitive neuroscience game where you guide an artificial character by manipulating its environment through Active Inference and predictive processing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
