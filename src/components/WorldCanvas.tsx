@@ -36,7 +36,7 @@ export const WorldCanvas: React.FC<WorldCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
 
   const height = grid.length;
-  const width = grid[0].length;
+  const width = grid[0]?.length ?? 0;
 
   const handleCellClick = (x: number, y: number) => {
     // Check if clicking existing tool
@@ -142,7 +142,8 @@ export const WorldCanvas: React.FC<WorldCanvasProps> = ({
         {grid.map((row, y) =>
           row.map((tile, x) => {
             const isCharHere = mind.position.x === x && mind.position.y === y;
-            const isCompanionHere = scenario.companionPos?.x === x && scenario.companionPos?.y === y;
+            const companionPos = mind.companionPosition ?? scenario.companionPos;
+            const isCompanionHere = companionPos?.x === x && companionPos?.y === y;
             const placedToolHere = placedTools.find(t => t.x === x && t.y === y);
             const visible = isTileVisible(x, y);
             const brightness = getTileBrightness(x, y);

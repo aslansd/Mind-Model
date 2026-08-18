@@ -19,6 +19,7 @@ import { Toolbox } from './components/Toolbox';
 import { ScenarioSelector } from './components/ScenarioSelector';
 import { SandboxControls } from './components/SandboxControls';
 import { CognitiveCodexModal } from './components/CognitiveCodexModal';
+import { loadProgress, saveProgress } from './utils/storage';
 import { 
   Brain, 
   Trophy, 
@@ -32,9 +33,13 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  // Scenario state
-  const [currentScenarioIndex, setCurrentScenarioIndex] = useState<number>(0);
-  const [completedScenarioIds, setCompletedScenarioIds] = useState<string[]>([]);
+  // Scenario state — restored from localStorage so solved experiments survive a refresh.
+  const saved = useRef(loadProgress()).current;
+  const [currentScenarioIndex, setCurrentScenarioIndex] = useState<number>(() => {
+    const idx = saved?.lastScenarioId ? SCENARIOS.findIndex(s => s.id === saved.lastScenarioId) : -1;
+    return idx >= 0 ? idx : 0;
+  });
+  const [completedScenarioIds, setCompletedScenarioIds] = useState<string[]>(saved?.completedScenarioIds ?? []);
   const [isSandboxMode, setIsSandboxMode] = useState<boolean>(false);
   const [showCodexModal, setShowCodexModal] = useState<boolean>(false);
   const [showHints, setShowHints] = useState<boolean>(false);
@@ -52,6 +57,12 @@ export default function App() {
   const [speed, setSpeed] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isLevelWon, setIsLevelWon] = useState<boolean>(false);
+  // The engine has always returned an eventSummary ("Noa bravely unlocked the Red
+  // Door!"), but nothing ever displayed it. Surface it as a transient banner.
+  const [eventBanner, setEventBanner] = useState<string | null>(null);
+  // The five-stage cycle indicator: the engine finishes every step in the 'act'
+  // stage, so the diagram was frozen on stage 5. Sweep it after each step.
+  const [loopStage, setLoopStage] = useState<CharacterMindState['activeInferenceStage']>('observe');
 
   // Initial Character Mind State generator
   const createInitialMindState = useCallback((sc: ScenarioLevel): CharacterMindState => {
@@ -86,6 +97,9 @@ export default function App() {
         fearThreshold: sc.initialHyperParams?.fearThreshold ?? 0.45,
         habitPersistence: sc.initialHyperParams?.habitPersistence ?? 0.5,
       },
+      companionPosition: sc.companionPos ? { ...sc.companionPos } : undefined,
+      cooperativeGateOpen: false,
+      visitCounts: { [`${sc.initialCharacterPos.x},${sc.initialCharacterPos.y}`]: 1 },
       policyCandidates: [],
       selectedAction: null,
       innerMonologue: [
@@ -103,6 +117,7 @@ export default function App() {
   const resetCurrentLevel = useCallback(() => {
     setIsRunning(false);
     setIsLevelWon(false);
+    setEventBanner(null);
     setGrid(scenario.grid.map(row => [...row]));
     setPlacedTools([]);
     setSelectedTool(null);
@@ -117,6 +132,8 @@ export default function App() {
       setIsSandboxMode(false);
       setIsRunning(false);
       setIsLevelWon(false);
+      setEventBanner(null);
+      setPaintTile(null);
       setGrid(newScenario.grid.map(row => [...row]));
       setPlacedTools([]);
       setSelectedTool(null);
@@ -137,6 +154,7 @@ export default function App() {
 
     setMind(nextState);
     setGrid(nextGrid);
+    if (eventSummary) setEventBanner(eventSummary);
 
     if (didWin && !isLevelWon) {
       setIsLevelWon(true);
@@ -155,6 +173,27 @@ export default function App() {
       }
     }
   }, [mind, scenario, placedTools, grid, isLevelWon, completedScenarioIds]);
+
+  // Persist progress whenever it changes.
+  useEffect(() => {
+    saveProgress({ completedScenarioIds, lastScenarioId: scenario.id });
+  }, [completedScenarioIds, scenario.id]);
+
+  // Sweep the cycle indicator through all five stages after each step so the
+  // diagram reflects the loop instead of sitting permanently on 'act'.
+  useEffect(() => {
+    const stages: CharacterMindState['activeInferenceStage'][] =
+      ['observe', 'error_calc', 'belief_update', 'policy_eval', 'act'];
+    const timers = stages.map((st, i) => setTimeout(() => setLoopStage(st), i * 70));
+    return () => timers.forEach(clearTimeout);
+  }, [mind.stepCount]);
+
+  // Expire the event banner.
+  useEffect(() => {
+    if (!eventBanner) return;
+    const t = setTimeout(() => setEventBanner(null), 4000);
+    return () => clearTimeout(t);
+  }, [eventBanner]);
 
   // Simulation timer loop
   useEffect(() => {
@@ -225,6 +264,33 @@ export default function App() {
     }));
   };
 
+  /**
+   * Entering the lab starts from a blank canvas; leaving it restores the
+   * scenario. Previously the flag flipped on its own, so the "Sandbox" map was
+   * really still scenario N, and any tiles painted there leaked back into the
+   * scenario when you left.
+   */
+  const handleToggleSandbox = () => {
+    const entering = !isSandboxMode;
+    setIsSandboxMode(entering);
+    setIsRunning(false);
+    setIsLevelWon(false);
+    setEventBanner(null);
+    setSelectedTool(null);
+    setPaintTile(null);
+    setPlacedTools([]);
+
+    if (entering) {
+      const blank: TileType[][] = Array.from({ length: 7 }, () => Array(11).fill('empty'));
+      blank[3][9] = 'goal_fruit';
+      setGrid(blank);
+      setMind({ ...createInitialMindState(scenario), position: { x: 1, y: 3 }, companionPosition: undefined });
+    } else {
+      setGrid(scenario.grid.map(row => [...row]));
+      setMind(createInitialMindState(scenario));
+    }
+  };
+
   // Advance to next level
   const handleNextScenario = () => {
     const nextIdx = (currentScenarioIndex + 1) % SCENARIOS.length;
@@ -290,6 +356,14 @@ export default function App() {
           </div>
         )}
 
+        {/* Transient event notice (door unlocked, gate opened, ...) */}
+        {eventBanner && !isLevelWon && (
+          <div className="p-3 rounded-2xl bg-cyan-950/40 border border-cyan-500/40 flex items-center gap-2.5 animate-fade-in">
+            <Sparkles className="w-4 h-4 text-cyan-300 shrink-0" />
+            <p className="text-xs text-cyan-100">{eventBanner}</p>
+          </div>
+        )}
+
         {/* Victory Banner */}
         {isLevelWon && (
           <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-emerald-950/80 via-teal-950/60 to-emerald-950/80 border-2 border-emerald-500 shadow-2xl shadow-emerald-950 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-fade-in">
@@ -326,7 +400,7 @@ export default function App() {
         )}
 
         {/* Live Active Inference Cycle Flow Indicator */}
-        <ActiveInferenceLoop mind={mind} />
+        <ActiveInferenceLoop mind={mind} stage={loopStage} />
 
         {/* Primary Simulation Layout: Grid Canvas & Mind Inspector */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -366,8 +440,12 @@ export default function App() {
             paintTile={paintTile}
             onSelectPaintTile={setPaintTile}
             onResetGrid={() => {
-              setGrid(Array.from({ length: 7 }, () => Array(9).fill('empty')));
+              const blank: TileType[][] = Array.from({ length: 7 }, () => Array(11).fill('empty'));
+              blank[3][9] = 'goal_fruit';
+              setGrid(blank);
               setPlacedTools([]);
+              setIsLevelWon(false);
+              setMind({ ...createInitialMindState(scenario), position: { x: 1, y: 3 }, companionPosition: undefined });
             }}
           />
         )}
@@ -378,7 +456,7 @@ export default function App() {
           onSelectScenario={handleSelectScenario}
           completedScenarioIds={completedScenarioIds}
           isSandboxMode={isSandboxMode}
-          onToggleSandbox={() => setIsSandboxMode(!isSandboxMode)}
+          onToggleSandbox={handleToggleSandbox}
         />
       </main>
 

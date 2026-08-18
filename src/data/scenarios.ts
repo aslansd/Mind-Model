@@ -34,7 +34,7 @@ function parseAsciiGrid(ascii: string[]): { grid: TileType[][]; width: number; h
 const l1Ascii = [
   '#######',
   '#.....#',
-  '#.###.#',
+  '#.#####',
   '#...R.F',
   '#######',
 ];
@@ -44,7 +44,7 @@ const l1Data = parseAsciiGrid(l1Ascii);
 const l2Ascii = [
   '#########',
   '#.......#',
-  '#.S.S.S.#',
+  '#S#S#S#S#',
   '#.......F',
   '#########',
 ];
@@ -54,7 +54,7 @@ const l2Data = parseAsciiGrid(l2Ascii);
 const l3Ascii = [
   '#########',
   '#...L...#',
-  '#.#####.#',
+  '#.#######',
   '#.....B.F',
   '#########',
 ];
@@ -82,11 +82,11 @@ const l5Data = parseAsciiGrid(l5Ascii);
 
 // Level 6: Social Inference & Mirror Automaton
 const l6Ascii = [
-  '###########',
-  '#....P....#',
-  '#.#######.#',
-  '#....P...G#',
-  '###########',
+  '############',
+  '#....P.....#',
+  '#.########.#',
+  '#....P...#GF',
+  '############',
 ];
 const l6Data = parseAsciiGrid(l6Ascii);
 
@@ -134,7 +134,7 @@ export const SCENARIOS: ScenarioLevel[] = [
     availableTools: ['safe_clue', 'torch', 'fruit_bait', 'calming_scent'],
     winCondition: {
       type: 'reach_tile',
-      targetPos: { x: 5, y: 3 },
+      targetPos: { x: 6, y: 3 },
       description: 'Guide Noa to open the Red Door and collect the Goal Fruit.',
     },
     hints: [
@@ -164,7 +164,7 @@ export const SCENARIOS: ScenarioLevel[] = [
         probabilityA: 0.88,
         priorProbabilityA: 0.88,
         precision: 0.75,
-        category: 'sensory',
+        category: 'hazard',
       },
       {
         id: 'torch_clarity',
@@ -186,12 +186,13 @@ export const SCENARIOS: ScenarioLevel[] = [
     availableTools: ['torch', 'acoustic_probe', 'calming_scent'],
     winCondition: {
       type: 'reach_tile',
-      targetPos: { x: 7, y: 3 },
+      targetPos: { x: 8, y: 3 },
       description: 'Illuminate the shadows so Noa realizes the path is safe and reaches the fruit.',
     },
     hints: [
-      'Place Torches directly on or adjacent to the Shadow tiles.',
-      'Watch Noa’s prediction error meter drop as illumination reveals the truth.',
+      'The shadow tiles are the only gaps between the two corridors — Noa has to cross one, and will not while it believes a predator lurks.',
+      'Place Torches directly on the Shadow tiles; above ~45% brightness the monster hypothesis collapses.',
+      'Watch Noa’s prediction error meter spike, then drop, as illumination overrides the top-down prior.',
     ],
   },
   {
@@ -236,7 +237,7 @@ export const SCENARIOS: ScenarioLevel[] = [
     availableTools: ['safe_clue', 'bell_chime', 'fruit_bait', 'acoustic_probe'],
     winCondition: {
       type: 'reach_tile',
-      targetPos: { x: 7, y: 3 },
+      targetPos: { x: 8, y: 3 },
       description: 'Guide Noa to investigate and activate the lever, opening the blue gate.',
     },
     leverConnections: {
@@ -273,6 +274,17 @@ export const SCENARIOS: ScenarioLevel[] = [
         precision: 0.50,
         category: 'sensory',
       },
+      {
+        id: 'shadow_is_monster',
+        name: 'Corridor Gloom',
+        description: 'Belief that the dim patch halfway down the corridor is unsafe.',
+        hypothesisA: 'Unsafe Gloom',
+        hypothesisB: 'Just Dim Floor',
+        probabilityA: 0.70,
+        priorProbabilityA: 0.70,
+        precision: 0.60,
+        category: 'hazard',
+      },
     ],
     initialHyperParams: {
       precisionWeight: 1.4,
@@ -285,8 +297,9 @@ export const SCENARIOS: ScenarioLevel[] = [
       description: 'Create an auditory attractor path with the bell and fruit to guide Noa.',
     },
     hints: [
-      'Place a Bell Chime near the goal fruit, or drop a bell in the corridor.',
-      'Drop Fruit Bait near the bell so Noa binds the sound to reward.',
+      'The dim patch mid-corridor reads as unsafe. A Torch on it lowers P(Unsafe Gloom) enough to walk through.',
+      'Place a Bell Chime in the corridor and Fruit Bait beyond it: co-occurrence binds the sound to reward, and the chime then pulls Noa forward on its own.',
+      'Scent and sound follow the corridor, so a bait placed round a corner still leads Noa there.',
     ],
   },
   {
@@ -321,7 +334,7 @@ export const SCENARIOS: ScenarioLevel[] = [
     availableTools: ['stochastic_spore', 'torch', 'fruit_bait', 'calming_scent'],
     winCondition: {
       type: 'reach_tile',
-      targetPos: { x: 7, y: 3 },
+      targetPos: { x: 8, y: 3 },
       description: 'Inject entropy spores to break Noa’s repetitive loop and steer it into the right corridor.',
     },
     hints: [
@@ -339,8 +352,8 @@ export const SCENARIOS: ScenarioLevel[] = [
     gridWidth: l6Data.width,
     gridHeight: l6Data.height,
     grid: l6Data.grid,
-    initialCharacterPos: { x: 1, y: 1 },
-    companionPos: { x: 1, y: 3 },
+    initialCharacterPos: { x: 1, y: 3 },
+    companionPos: { x: 1, y: 1 },
     initialBeliefs: [
       {
         id: 'dual_plate_cooperation',
@@ -361,12 +374,14 @@ export const SCENARIOS: ScenarioLevel[] = [
     availableTools: ['bell_chime', 'fruit_bait', 'torch', 'safe_clue', 'calming_scent'],
     winCondition: {
       type: 'reach_tile',
-      targetPos: { x: 9, y: 3 },
-      description: 'Position both agents on the pressure pads to open the green gate and reach the goal.',
+      targetPos: { x: 11, y: 3 },
+      description: 'Get Noa and Kip onto both pressure pads to open the green gate, then reach the fruit.',
     },
     hints: [
-      'Place a Bell Chime or Fruit Bait near the top pressure pad for Noa.',
-      'Place a Torch or Safety Sign near the bottom pressure pad for Kip.',
+      'The green gate is a hard barrier — until both plates are pressed, the fruit is unreachable and Noa will look for something else to do.',
+      'Kip walks toward whichever plate Noa is not standing on. Give Noa a reason to hold its plate: drop Fruit Bait or a Bell Chime on it.',
+      'A Safety Sign or Echolocation Probe on a plate raises its epistemic pull, which is what draws Noa across the room.',
+      'Careful with Fruit Bait on a plate: it works, but Noa will happily camp on the bait forever. Remove it once the gate is open.',
     ],
   },
 ];

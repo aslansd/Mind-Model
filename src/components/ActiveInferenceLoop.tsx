@@ -4,10 +4,12 @@ import { CharacterMindState } from '../types';
 
 interface ActiveInferenceLoopProps {
   mind: CharacterMindState;
+  /** Animated stage from App. Falls back to the mind's own stage. */
+  stage?: CharacterMindState['activeInferenceStage'];
 }
 
-export const ActiveInferenceLoop: React.FC<ActiveInferenceLoopProps> = ({ mind }) => {
-  const stage = mind.activeInferenceStage;
+export const ActiveInferenceLoop: React.FC<ActiveInferenceLoopProps> = ({ mind, stage: stageProp }) => {
+  const stage = stageProp ?? mind.activeInferenceStage;
 
   const nodes = [
     {

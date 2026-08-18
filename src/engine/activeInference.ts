@@ -48,6 +48,156 @@ export function hasLineOfSight(from: Position, to: Position, grid: TileType[][])
   }
 }
 
+
+/**
+ * Which tiles can actually be walked on right now.
+ * `red_door` is passable only once Noa's fear of it has dropped below threshold;
+ * `blue_door` / `green_door` are hard gates until a mechanism opens them (the
+ * engine replaces the tile with 'empty' at that point).
+ */
+export function isPassable(
+  tile: TileType | undefined,
+  redDoorBelief: number,
+  fearThreshold: number
+): boolean {
+  if (tile === undefined) return false;
+  if (tile === 'wall') return false;
+  if (tile === 'blue_door' || tile === 'green_door') return false;
+  if (tile === 'red_door') return redDoorBelief <= fearThreshold;
+  return true;
+}
+
+/**
+ * Breadth-first reachability. Without this the agent happily beelines toward a
+ * goal it cannot actually get to (scenario 3's fruit behind the blue gate) and
+ * then oscillates against the barrier forever, because the pragmatic distance
+ * gradient keeps pulling it back. Knowing the goal is unreachable is what lets
+ * epistemic value take over and send Noa off to find the lever.
+ */
+export function isReachable(
+  from: Position,
+  to: Position,
+  grid: TileType[][],
+  redDoorBelief: number,
+  fearThreshold: number
+): boolean {
+  const h = grid.length;
+  const w = grid[0]?.length ?? 0;
+  if (!h || !w) return false;
+  if (to.x < 0 || to.y < 0 || to.x >= w || to.y >= h) return false;
+
+  const seen = new Set<string>([`${from.x},${from.y}`]);
+  const queue: Position[] = [from];
+
+  while (queue.length) {
+    const cur = queue.shift()!;
+    if (cur.x === to.x && cur.y === to.y) return true;
+    const steps = [
+      { x: cur.x + 1, y: cur.y },
+      { x: cur.x - 1, y: cur.y },
+      { x: cur.x, y: cur.y + 1 },
+      { x: cur.x, y: cur.y - 1 },
+    ];
+    for (const n of steps) {
+      if (n.x < 0 || n.y < 0 || n.x >= w || n.y >= h) continue;
+      const key = `${n.x},${n.y}`;
+      if (seen.has(key)) continue;
+      // The destination itself counts as reachable even if it sits on a gate.
+      const atGoal = n.x === to.x && n.y === to.y;
+      if (!atGoal && !isPassable(grid[n.y][n.x], redDoorBelief, fearThreshold)) continue;
+      seen.add(key);
+      queue.push(n);
+    }
+  }
+  return false;
+}
+
+/**
+ * BFS distance field from `origin` across passable tiles.
+ * Straight-line distance is what trapped Noa in dead ends: a tile can be two
+ * steps away as the crow flies and unreachable in practice, so a greedy
+ * Manhattan gradient walks the agent into a wall and holds it there. Planning
+ * against true path length removes those local minima.
+ */
+export function pathDistanceField(
+  origin: Position,
+  grid: TileType[][],
+  redDoorBelief: number,
+  fearThreshold: number
+): number[][] {
+  const h = grid.length;
+  const w = grid[0]?.length ?? 0;
+  const dist: number[][] = Array.from({ length: h }, () => Array(w).fill(Infinity));
+  if (!h || !w) return dist;
+  if (origin.x < 0 || origin.y < 0 || origin.x >= w || origin.y >= h) return dist;
+
+  dist[origin.y][origin.x] = 0;
+  const queue: Position[] = [origin];
+
+  while (queue.length) {
+    const cur = queue.shift()!;
+    const d = dist[cur.y][cur.x];
+    const steps = [
+      { x: cur.x + 1, y: cur.y },
+      { x: cur.x - 1, y: cur.y },
+      { x: cur.x, y: cur.y + 1 },
+      { x: cur.x, y: cur.y - 1 },
+    ];
+    for (const n of steps) {
+      if (n.x < 0 || n.y < 0 || n.x >= w || n.y >= h) continue;
+      if (dist[n.y][n.x] !== Infinity) continue;
+      if (!isPassable(grid[n.y][n.x], redDoorBelief, fearThreshold)) continue;
+      dist[n.y][n.x] = d + 1;
+      queue.push(n);
+    }
+  }
+  return dist;
+}
+
+/** Locate every tile of a given type. */
+export function findTiles(grid: TileType[][], type: TileType): Position[] {
+  const out: Position[] = [];
+  grid.forEach((row, y) => row.forEach((t, x) => { if (t === type) out.push({ x, y }); }));
+  return out;
+}
+
+/**
+ * Step the companion automaton (scenario 6) one tile toward the pressure pad
+ * that Noa is not standing on. Deliberately simple: this is a prop for the
+ * joint-inference lesson, not a second full agent.
+ */
+export function stepCompanion(
+  companion: Position,
+  noa: Position,
+  grid: TileType[][]
+): Position {
+  const pads = findTiles(grid, 'target_pad');
+  if (!pads.length) return companion;
+
+  const free = pads.filter(p => !(p.x === noa.x && p.y === noa.y));
+  const target = (free.length ? free : pads)
+    .slice()
+    .sort((a, b) => manhattanDist(companion, a) - manhattanDist(companion, b))[0];
+
+  if (companion.x === target.x && companion.y === target.y) return companion;
+
+  const h = grid.length;
+  const w = grid[0]?.length ?? 0;
+  const options = [
+    { x: companion.x + Math.sign(target.x - companion.x), y: companion.y },
+    { x: companion.x, y: companion.y + Math.sign(target.y - companion.y) },
+  ].filter(n =>
+    n.x >= 0 && n.y >= 0 && n.x < w && n.y < h &&
+    (n.x !== companion.x || n.y !== companion.y) &&
+    grid[n.y][n.x] !== 'wall' && grid[n.y][n.x] !== 'blue_door' && grid[n.y][n.x] !== 'green_door' &&
+    !(n.x === noa.x && n.y === noa.y)
+  );
+
+  if (!options.length) return companion;
+  options.sort((a, b) => manhattanDist(a, target) - manhattanDist(b, target));
+  return options[0];
+}
+
 /**
  * Gather sensory inputs from the environment given character position and placed tools.
  */
@@ -58,7 +208,7 @@ export function sampleSensoryInputs(
   sensoryNoise: number
 ): SensoryObservation {
   const height = grid.length;
-  const width = grid[0].length;
+  const width = grid[0]?.length ?? 0;
   const visibleTiles: { x: number; y: number; tile: TileType; brightness: number }[] = [];
   const auditorySensations: { source: Position; soundType: string; amplitude: number }[] = [];
   const perceivedHazards: { x: number; y: number; type: string; certainty: number }[] = [];
@@ -240,11 +390,11 @@ export function updateBeliefs(
       const leverObs = obs.visibleTiles.find(t => t.tile === 'lever');
       if (leverObs) {
         const dist = manhattanDist(pos, { x: leverObs.x, y: leverObs.y });
-        let clueNearLever = tools.some(
+        const clueNearLever = tools.some(
           t => (t.type === 'safe_clue' || t.type === 'acoustic_probe') && euclideanDist({ x: leverObs.x, y: leverObs.y }, { x: t.x, y: t.y }) <= 2.5
         );
 
-        if (dist <= 2 || clueNearLever) {
+        if (clueNearLever) {
           const expected = belief.probabilityA;
           const actualEvidence = 0.96;
           pe = Math.abs(actualEvidence - expected);
@@ -286,10 +436,13 @@ export function updateBeliefs(
       }
     }
 
-    // 6. Social Cooperative Rule
+    // 6. Social Cooperative Rule.
+    // This looked for a 'companion' TILE, which no scenario grid ever contained,
+    // so the belief could never update. Kip is an agent, not terrain: the pads
+    // themselves are the observable affordance.
     if (belief.id === 'dual_plate_cooperation') {
-      const companionObs = obs.visibleTiles.find(t => t.tile === 'companion');
-      if (companionObs) {
+      const padObs = obs.visibleTiles.filter(t => t.tile === 'target_pad');
+      if (padObs.length > 0) {
         pe = 0.25;
         totalPE += pe;
         newProb = Math.min(0.95, belief.probabilityA + 0.25 * precisionWeight);
@@ -320,7 +473,9 @@ export function evaluatePolicyActions(
   obs: SensoryObservation,
   tools: PlacedTool[],
   hyperParams: CharacterMindState['hyperParameters'],
-  targetGoal: Position | null
+  targetGoal: Position | null,
+  goalIsReachable: boolean = true,
+  visitCounts: Record<string, number> = {}
 ): { policies: PolicyAction[]; selected: PolicyAction; thought: string } {
   const directions: { dx: number; dy: number; label: PolicyAction['label'] }[] = [
     { dx: 0, dy: -1, label: 'Up' },
@@ -331,13 +486,85 @@ export function evaluatePolicyActions(
   ];
 
   const height = grid.length;
-  const width = grid[0].length;
+  const width = grid[0]?.length ?? 0;
 
   const redDoorBelief = beliefs.find(b => b.id === 'red_door_danger')?.probabilityA ?? 0.5;
   const shadowBelief = beliefs.find(b => b.id === 'shadow_is_monster')?.probabilityA ?? 0.5;
   const chimeBelief = beliefs.find(b => b.id === 'chime_signals_reward')?.probabilityA ?? 0.3;
   const leverBelief = beliefs.find(b => b.id === 'lever_unlocks_door')?.probabilityA ?? 0.5;
   const habitSafety = beliefs.find(b => b.id === 'habit_safety')?.probabilityA ?? 0.0;
+
+  // Interactables whose outcome Noa has not resolved yet, weighted by how
+  // ambiguous the corresponding belief still is. Each carries a walkable
+  // distance field so the drive to reach it survives walls and detours.
+  const redDoorForPlanning = beliefs.find(b => b.id === 'red_door_danger')?.probabilityA ?? 0;
+  const makeField = (p: Position) =>
+    pathDistanceField(p, grid, redDoorForPlanning, hyperParams.fearThreshold);
+
+  const epistemicTargets: { pos: Position; weight: number; field: number[][] }[] = [];
+
+  // Long-range epistemic pull comes ONLY from beacons the player places. That is
+  // the whole game: Noa will not spontaneously cross a room to investigate a
+  // lever it has no reason to care about, and every scenario's hints say to mark
+  // the point of interest. Giving interactables an unconditional pull made Noa
+  // solve several levels unaided, which removed the puzzle.
+  const interactables = [...findTiles(grid, 'lever'), ...findTiles(grid, 'target_pad')];
+
+  for (const t of tools) {
+    if (t.type !== 'safe_clue' && t.type !== 'acoustic_probe') continue;
+    const at = { x: t.x, y: t.y };
+
+    // A beacon dropped on or beside an unresolved affordance is far more
+    // informative than one in open floor.
+    const marksInteractable = interactables.some(i => euclideanDist(i, at) <= 2.5);
+    let weight = marksInteractable ? 3.2 : 1.2;
+
+    // Once the goal is actually reachable, pragmatic value should win. Leaving
+    // beacons at full strength pinned Noa oscillating on the pressure plate it
+    // had already finished using.
+    if (goalIsReachable) weight *= 0.3;
+
+    // Once the lever question is settled there is nothing left to learn there.
+    if (marksInteractable && findTiles(grid, 'lever').some(l => euclideanDist(l, at) <= 2.5)) {
+      const ambiguity = 1.0 - Math.abs(leverBelief - 0.5) * 2;
+      weight *= Math.max(0.15, ambiguity);
+    }
+
+    epistemicTargets.push({ pos: at, weight, field: makeField(at) });
+  }
+
+  const attractorBeacons: { weight: number; field: number[][] }[] = [];
+  for (const t of tools) {
+    if (t.type === 'fruit_bait') {
+      attractorBeacons.push({ weight: 2.0, field: makeField({ x: t.x, y: t.y }) });
+    }
+    if (t.type === 'bell_chime') {
+      // Worth approaching only to the extent Noa has learned the chime means food.
+      attractorBeacons.push({ weight: 2.2 * chimeBelief, field: makeField({ x: t.x, y: t.y }) });
+    }
+  }
+
+  // Frontier exploration. A purely local novelty bonus ties as soon as every
+  // neighbour has been seen once, which leaves the agent ping-ponging in a
+  // corridor it has already exhausted. Aim at the nearest genuinely unvisited
+  // tile instead, so exploration has a direction.
+  let frontierField: number[][] | null = null;
+  if (!goalIsReachable) {
+    const reach = pathDistanceField(pos, grid, redDoorForPlanning, hyperParams.fearThreshold);
+    let best: Position | null = null;
+    let bestD = Infinity;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if ((visitCounts[`${x},${y}`] ?? 0) > 0) continue;
+        const d = reach[y][x];
+        if (Number.isFinite(d) && d > 0 && d < bestD) { bestD = d; best = { x, y }; }
+      }
+    }
+    if (best) frontierField = makeField(best);
+  }
+
+  // Distance field toward the goal, used instead of Manhattan distance.
+  const goalField = targetGoal && goalIsReachable ? makeField(targetGoal) : null;
 
   const evaluated: PolicyAction[] = directions.map(dir => {
     const nx = pos.x + dir.dx;
@@ -381,7 +608,8 @@ export function evaluatePolicyActions(
       }
     }
 
-    if (tile === 'blue_door') {
+    // Hard gates. They become 'empty' the moment their mechanism fires.
+    if (tile === 'blue_door' || tile === 'green_door') {
       return {
         ...dir,
         epistemicValue: -50,
@@ -393,6 +621,20 @@ export function evaluatePolicyActions(
 
     // --- Epistemic Value Calculation (Information Gain / Ambiguity Resolution) ---
     let epistemicVal = 0.5; // Base exploration incentive
+
+    // Novelty / state-visitation term. Without this the agent has no reason to
+    // prefer anywhere it has not been, so with no goal gradient it deterministically
+    // ping-pongs between two adjacent tiles and never discovers the affordance the
+    // level is built around. Reducing uncertainty about unvisited states is
+    // epistemic value in its own right.
+    const visits = visitCounts[`${nx},${ny}`] ?? 0;
+    epistemicVal += 1.6 / (1 + visits * 1.5);
+
+    if (frontierField) {
+      const before = frontierField[pos.y]?.[pos.x] ?? Infinity;
+      const after = frontierField[ny]?.[nx] ?? Infinity;
+      if (Number.isFinite(after) && after < before) epistemicVal += 1.5;
+    }
 
     // Distance to unlit or unexplored areas
     tools.forEach(t => {
@@ -410,6 +652,19 @@ export function evaluatePolicyActions(
       epistemicVal += 3.5 * ambiguity;
     }
 
+    // A one-tile-lookahead bonus is not enough to steer Noa across a room: the
+    // lever was only "interesting" once already standing on it, so Noa never
+    // travelled there. Expected free energy is defined over a policy horizon, so
+    // give unresolved interactables a gradient along the actual walkable path.
+    for (const target of epistemicTargets) {
+      const field = target.field;
+      const before = field[pos.y]?.[pos.x] ?? Infinity;
+      const after = field[ny]?.[nx] ?? Infinity;
+      if (Number.isFinite(after) && after < before) {
+        epistemicVal += target.weight * (1.6 / (1 + after * 0.35));
+      }
+    }
+
     if (tile === 'shadow') {
       if (shadowBelief > hyperParams.fearThreshold) {
         epistemicVal -= 2.0; // Avoid terrified shadows
@@ -421,14 +676,16 @@ export function evaluatePolicyActions(
     // --- Pragmatic Value Calculation (Prior Preference Alignment C(o)) ---
     let pragmaticVal = 0;
 
-    // Moving toward goal fruit
-    if (targetGoal) {
-      const currDist = manhattanDist(pos, targetGoal);
-      const newDist = manhattanDist({ x: nx, y: ny }, targetGoal);
-      if (newDist < currDist) {
-        pragmaticVal += 4.5;
-      } else if (newDist > currDist) {
-        pragmaticVal -= 1.5;
+    // Moving toward goal fruit — but only when a path actually exists. Chasing an
+    // unreachable goal is what pinned Noa against the blue gate in scenario 3.
+    if (goalField) {
+      const currDist = goalField[pos.y]?.[pos.x] ?? Infinity;
+      const newDist = goalField[ny]?.[nx] ?? Infinity;
+      if (Number.isFinite(newDist) && Number.isFinite(currDist)) {
+        if (newDist < currDist) pragmaticVal += 4.5;
+        else if (newDist > currDist) pragmaticVal -= 1.5;
+      } else if (!Number.isFinite(newDist)) {
+        pragmaticVal -= 1.5; // stepping off the connected region
       }
     }
 
@@ -447,6 +704,16 @@ export function evaluatePolicyActions(
       }
     });
 
+    // Scent and sound travel along the corridor, not through walls: give bait and
+    // chimes a walkable gradient so they can actually lead Noa around a corner.
+    for (const beacon of attractorBeacons) {
+      const before = beacon.field[pos.y]?.[pos.x] ?? Infinity;
+      const after = beacon.field[ny]?.[nx] ?? Infinity;
+      if (Number.isFinite(after) && after < before) {
+        pragmaticVal += beacon.weight * (2.2 / (1 + after * 0.4));
+      }
+    }
+
     // Shadow penalty if darkness feared
     if (tile === 'shadow' && shadowBelief > hyperParams.fearThreshold) {
       pragmaticVal -= 15.0 * shadowBelief;
@@ -455,6 +722,10 @@ export function evaluatePolicyActions(
     // Perseveration habit bias (if right passage perceived dangerous)
     if (habitSafety > 0.5 && nx > 4) {
       pragmaticVal -= 20.0 * habitSafety * (hyperParams.habitPersistence ?? 0.5);
+    }
+
+    if (tile === 'target_pad' && !goalIsReachable) {
+      pragmaticVal += 6.0; // Holding the plate is the useful thing to do.
     }
 
     // Stay penalty to avoid stagnation (unless trapped)
@@ -531,9 +802,12 @@ export function updateAffect(
   // Curiosity: epistemic value of chosen action
   const curiosity = Math.max(0, Math.min(1, selectedPolicy.epistemicValue / 4.0));
 
-  // Fear: highest hazard probability
+  // Fear: highest THREAT probability.
+  // This previously also swept in every 'sensory' belief, so scenario 4's
+  // Pavlovian "chime predicts reward" belief drove fear to 0.95 as Noa learned
+  // something reassuring, flipping the affect readout to Anxious.
   const maxHazard = Math.max(
-    ...beliefs.filter(b => b.category === 'hazard' || b.category === 'sensory').map(b => b.probabilityA),
+    ...beliefs.filter(b => b.category === 'hazard').map(b => b.probabilityA),
     0
   );
   const fear = maxHazard;
@@ -613,16 +887,19 @@ export function stepActiveInference(
     soundSynth.playPredictionErrorSound(totalPredictionError);
   }
 
-  // Find goal destination
-  let goalPos: Position | null = null;
-  for (let r = 0; r < nextGrid.length; r++) {
-    for (let c = 0; c < nextGrid[0].length; c++) {
-      if (nextGrid[r][c] === 'goal_fruit') {
-        goalPos = { x: c, y: r };
-        break;
-      }
-    }
+  // Find goal destination. Prefer the scenario's declared target tile, falling
+  // back to the fruit. (The inner `break` used to leak into the outer loop, so a
+  // second fruit would silently override the first.)
+  const fruitTiles = findTiles(nextGrid, 'goal_fruit');
+  let goalPos: Position | null = fruitTiles[0] ?? null;
+  if (scenario.winCondition.type === 'reach_tile' && scenario.winCondition.targetPos) {
+    goalPos = scenario.winCondition.targetPos;
   }
+
+  const redDoorBeliefNow = updatedBeliefs.find(b => b.id === 'red_door_danger')?.probabilityA ?? 0;
+  const goalIsReachable = goalPos
+    ? isReachable(state.position, goalPos, nextGrid, redDoorBeliefNow, state.hyperParameters.fearThreshold)
+    : false;
 
   // 3. POLICY EVALUATION & MOTOR ACTION SELECTION
   const { policies, selected: chosenAction, thought: policyThought } = evaluatePolicyActions(
@@ -632,7 +909,9 @@ export function stepActiveInference(
     sensory,
     tools,
     state.hyperParameters,
-    goalPos
+    goalPos,
+    goalIsReachable,
+    state.visitCounts ?? {}
   );
 
   // 4. AFFECT / EMOTION DYNAMICS
@@ -655,6 +934,20 @@ export function stepActiveInference(
   else if (chosenAction.dy > 0) facing = 'down';
   else if (chosenAction.dy < 0) facing = 'up';
 
+  // Guard the motor command. Policy evaluation scores walls and out-of-bounds
+  // moves as impossible, but nothing downstream re-checked, so any future scoring
+  // change could have teleported Noa into geometry. Refuse the move instead.
+  if (
+    newY < 0 || newY >= nextGrid.length ||
+    newX < 0 || newX >= (nextGrid[0]?.length ?? 0) ||
+    nextGrid[newY][newX] === 'wall' ||
+    nextGrid[newY][newX] === 'blue_door' ||
+    nextGrid[newY][newX] === 'green_door'
+  ) {
+    newX = state.position.x;
+    newY = state.position.y;
+  }
+
   // Interaction with special tiles
   const destTile = nextGrid[newY]?.[newX];
 
@@ -672,20 +965,71 @@ export function stepActiveInference(
     }
   }
 
+  let leverActivated = false;
   if (destTile === 'lever') {
     // Check if lever opens anything in scenario
     const leverKey = `${newX},${newY}`;
     const connection = scenario.leverConnections?.[leverKey];
-    if (connection) {
+    const leverConfidence = updatedBeliefs.find(b => b.id === 'lever_unlocks_door')?.probabilityA ?? 1;
+    // Noa will not pull a switch it thinks is as likely to raise an alarm as to
+    // open the gate — resolving that ambiguity is the player's job.
+    if (connection && leverConfidence > 0.6) {
+      leverActivated = true;
       nextGrid[connection.targetPos.y][connection.targetPos.x] = connection.unlocksTile;
       eventSummary = 'Noa activated the mechanical lever! The security gate clicked open.';
       soundSynth.playEurekaSound();
     }
   }
 
+  // --- Cooperative pressure pads (scenario 6) -------------------------------
+  // Move the companion, then check whether Noa and the companion are each
+  // standing on a different pad. Previously target_pad had no behaviour at all,
+  // so the social scenario had nothing to solve.
+  let companionPosition = state.companionPosition;
+  let cooperativeGateOpen = state.cooperativeGateOpen ?? false;
+  const pads = findTiles(nextGrid, 'target_pad');
+
+  if (companionPosition) {
+    companionPosition = stepCompanion(companionPosition, { x: newX, y: newY }, nextGrid);
+  }
+
+  if (pads.length >= 2 && !cooperativeGateOpen) {
+    const noaOnPad = pads.some(p => p.x === newX && p.y === newY);
+    const companionOnDifferentPad = !!companionPosition && pads.some(
+      p => p.x === companionPosition!.x && p.y === companionPosition!.y &&
+           !(p.x === newX && p.y === newY)
+    );
+    if (noaOnPad && companionOnDifferentPad) {
+      cooperativeGateOpen = true;
+      // Latch every green gate open; joint action is what unlocks the exit.
+      findTiles(nextGrid, 'green_door').forEach(g => { nextGrid[g.y][g.x] = 'empty'; });
+      eventSummary = 'Noa and Kip pressed both plates together — the green gate slid open!';
+      soundSynth.playEurekaSound();
+    }
+  }
+
   if (destTile === 'goal_fruit') {
-    didWin = true;
     eventSummary = 'Goal reached! Primary homeostatic nourishment obtained.';
+  }
+
+  // --- Win evaluation -------------------------------------------------------
+  // The engine used to win only on `goal_fruit`, ignoring scenario.winCondition
+  // entirely. That left scenario 6 (no fruit tile at all) permanently unwinnable.
+  const wc = scenario.winCondition;
+  if (wc.type === 'reach_tile') {
+    const target = wc.targetPos;
+    didWin = target ? newX === target.x && newY === target.y : destTile === 'goal_fruit';
+  } else if (wc.type === 'update_belief') {
+    const b = updatedBeliefs.find(x => x.id === wc.targetBeliefId);
+    didWin = !!b && typeof wc.targetBeliefValue === 'number' && b.probabilityA <= wc.targetBeliefValue;
+  } else if (wc.type === 'solve_lever') {
+    didWin = leverActivated;
+  } else if (wc.type === 'cooperative') {
+    didWin = cooperativeGateOpen;
+  }
+
+  if (didWin) {
+    if (!eventSummary) eventSummary = 'Objective complete.';
     soundSynth.playEurekaSound();
   }
 
@@ -729,6 +1073,12 @@ export function stepActiveInference(
     thoughtBubble,
     stepCount: state.stepCount + 1,
     activeInferenceStage: 'act',
+    companionPosition,
+    cooperativeGateOpen,
+    visitCounts: {
+      ...(state.visitCounts ?? {}),
+      [`${newX},${newY}`]: ((state.visitCounts ?? {})[`${newX},${newY}`] ?? 0) + 1,
+    },
   };
 
   return {

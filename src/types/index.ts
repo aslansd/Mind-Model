@@ -113,6 +113,8 @@ export interface SensoryObservation {
 export interface CharacterMindState {
   name: string;
   position: Position;
+  /** Position of the cooperative automaton (scenario 6). Undefined when the scenario has none. */
+  companionPosition?: Position;
   targetDestination: Position | null;
   facing: 'up' | 'down' | 'left' | 'right';
   beliefs: DiscreteBelief[];
@@ -133,6 +135,10 @@ export interface CharacterMindState {
   thoughtBubble: string;
   stepCount: number;
   activeInferenceStage: 'observe' | 'error_calc' | 'belief_update' | 'policy_eval' | 'act';
+  /** Latched once every pressure pad has been occupied simultaneously. */
+  cooperativeGateOpen?: boolean;
+  /** How often each tile has been occupied, keyed "x,y". Drives novelty-seeking. */
+  visitCounts?: Record<string, number>;
 }
 
 export interface ScenarioLevel {
